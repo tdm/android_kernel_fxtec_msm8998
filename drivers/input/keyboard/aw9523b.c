@@ -551,7 +551,7 @@ u16 keyboard_get_press_key(u16 *funckey)
         return 0xFF;
     }
 	
-	for(j = 0; j < 3; j++){
+	for(j = 0; j < 2; j++){
 		for (i = 0; i < X_NUM; i++) {		 
 			if(p0_value == p0_port_be_press_value[j][i]){
 				p0_index = i;
