@@ -107,12 +107,6 @@ struct aw9523b_data {
 #define AW9523B_VIO_MIN_UV       1800000
 #define AW9523B_VIO_MAX_UV       1800000
 
-
-#define PLATFORM_QUALCOMM
-#ifdef PLATFORM_QUALCOMM
-
-
-#endif
 typedef enum {
     P0_0,
     P0_1, 
@@ -135,85 +129,14 @@ typedef enum {
     P1_7    
 } P1_Enum;
  
-typedef enum {
-    KEY_STATE_PRESSED,
-    KEY_STATE_RELEASED,
-    KEY_STATE_LONGPRESS,
-    KEY_STATE_REPEATED, 
-    KEY_STATE_NULL 
-}TOUCHKEY_STATE;
-
-TOUCHKEY_STATE KeyBoardKey_State=KEY_STATE_NULL;
-
-/* 当有一部分P0\P1口用做扩展GPIO来控制子系统时,为了使软件控制方便,最好遵循一个原则:
- * 即当大部分P0口用做键盘扫描的输入时,那么其他的P0口作为输出来控制子系统;
- *   当大部分P1口用做键盘扫描的输出时,那么其他的P1口作为输入来控制子系统.
-*/
-#if 0
-//下面这个数组定义了哪些P0口是用做键盘扫描的,1为使用,0为不使用.在键盘扫描时,不用做键盘扫描的P0口,其读出的值会被屏蔽
-static unsigned char p0_kbd_used[8] = {
-    1,/*P0_0*/
-    1,/*P0_1*/
-    1,/*P0_2*/
-    1,/*P0_3*/
-    1,/*P0_4*/
-    1,/*P0_5*/
-    1,/*P0_6*/
-    1,/*P0_7*/
-};
-
-//下面这个数组定义了哪些P1口是用做键盘扫描的,1为使用,0为不使用.
-static unsigned char p1_kbd_used[8] = {   
-    1,/*P1_0*/
-    1,/*P1_1*/
-    1,/*P1_2*/
-    1,/*P1_3*/
-    1,/*P1_4*/
-    1,/*P1_5*/
-    1,/*P1_6*/
-    1,/*P1_7*/ 
-};
- #endif
-//下面这个数组定义列是由哪几个P0口（或P1口）从左到右顺序组成的，根据键盘布局来定义
-static const P0_Enum col[X_NUM] = {
-    P0_0,
-    P0_1,
-    P0_2,
-    P0_3,
-    P0_4,
-    P0_5,
-    P0_6,
-    P0_7
-};
-
-//下面这个数组定义行是由哪几个P1口（或P0口）从上到下顺序组成的，根据键盘布局来定义 
-static const P1_Enum row[Y_NUM] = {
-    P1_0,
-    P1_1,
-    P1_2,
-    P1_3,
-    P1_4,
-    P1_5,
-    P1_6,
-    P1_7
-    
-};
- 
-
-static u8 p0_kbd_used_mask = 0x0;
-static u8 p1_kbd_used_mask = 0x0;
-
 //以下P0_X,P1_Y这两个数组的值会通过aw9523b_setting.h配置文件里的参数动态算出来
 static const u8 p0_port_be_press_value[2][X_NUM] = {
 													{0xfe,0xbf,0xdf,0xef,0xf7,0xfd,0xfb,0x7f},
 													{0xfa,0xbb,0xdb,0xeb,0xf3,0xf9,0xf7,0x7b},
 													}; /*根据硬件设计， 每一列按下去P0口的值，通过这个值，可以判断是哪列被按下*/
-static u8 p1_port_output_value[Y_NUM] ; /*根据硬件设计， P1行值的设置，通过这个值去扫描判断哪一行被按下*/  
 //本例中计算出的P0_X[0:3]={0xfe,0xfd,0xfb,0xf7}
 //本例中计算出的P1_Y[0:5]={0x3e,0x3d,0x3b,0x37,0x2f,0x1f}
- 
- 
- 
+
 static u8  aw9523b_chip_id = 0;
 
 static struct input_dev *aw9523b_input_dev;
@@ -448,37 +371,8 @@ static void aw9523b_set_P1_value(u8 data)
     aw9523b_write_reg(0x03, data);
 }
 
-static void init_p0_p1_lookup_table(void)
-{
-    int i = 0;
-
-    for (i = 0;i < X_NUM; i++) {
-        p0_kbd_used_mask = p0_kbd_used_mask | (1 << col[i]);
-    }
-    AW9523_LOG("col_temp = %x \n", p0_kbd_used_mask);
-#if 0
-    for (i = 0; i < X_NUM; i++) {
-        p0_port_be_press_value[i] = p0_kbd_used_mask & (~(1 << col[i]));
-        AW9523_LOG("p0_port_be_press_value[%d] = %x \n", i, p0_port_be_press_value[i]);
-    }
-#endif
-    for (i = 0; i < Y_NUM; i++) {
-        p1_kbd_used_mask = p1_kbd_used_mask | (1 << row[i]);
-    }
-    AW9523_LOG("p1_kbd_used_mask = %x \n", p1_kbd_used_mask);
-
-    for (i = 0; i < Y_NUM; i++) {
-        p1_port_output_value[i] = p1_kbd_used_mask & (~(1 << row[i]));
-        AW9523_LOG("p1_port_output_value[%d] = %x \n", i, p1_port_output_value[i]);
-    }
-
-
-}
-
-
 static void default_p0_p1_settings(void)
 {
-    init_p0_p1_lookup_table();
     aw9523b_config_P0_input();
     aw9523b_enable_P0_interupt();    
     aw9523b_config_P1_output();
@@ -515,7 +409,7 @@ u16 keyboard_get_func_press_key(void)
     }
 
 	for (i = 0;i < Y_NUM; i++) {
-        aw9523b_set_P1_value( p1_port_output_value[i]);
+        aw9523b_set_P1_value(~(1 << i));
 		p0_value = aw9523b_get_P0_value();		
 		AW9523_LOG("%s [%d]:p0_value=%x  \n", __func__,i,p0_value);
 		p0_value &= 0x80;
@@ -536,16 +430,17 @@ u16 keyboard_get_func_press_key(void)
 
 }
 
+#if 0
 u16 keyboard_get_press_key(u16 *funckey)
 {
-    u8 p0_index = 0xFF, p1_index = 0XFF,key_index=0xff;
+    u8 p0_index = 0xFF, p1_index = 0XFF, key_index=0xff;
     u8 i = 0,j=0;
     u8 p0_value = 0xff;
 	u16 checkkey = 0xff;
-    p0_value = (aw9523b_get_P0_value()&p0_kbd_used_mask);
+    p0_value = aw9523b_get_P0_value();
 
     AW9523_LOG("X p0_value=0x%x \n", p0_value);
-    if (!((~p0_value)& p0_kbd_used_mask))
+    if (!(~p0_value))
     {	
 		*funckey = checkkey = 0xff;
         return 0xFF;
@@ -571,10 +466,10 @@ u16 keyboard_get_press_key(u16 *funckey)
     }
 
     for (i = 0;i < Y_NUM; i++) {
-        aw9523b_set_P1_value( p1_port_output_value[i]);
-        p0_value = (aw9523b_get_P0_value()&p0_kbd_used_mask);
+        aw9523b_set_P1_value(~(1 << i));
+        p0_value = (aw9523b_get_P0_value());
 		AW9523_LOG("Y p0_value=%x  \n", p0_value);
-        if(((p0_value)&(p0_kbd_used_mask)) == p0_port_be_press_value[0][p0_index]||((p0_value)&(p0_kbd_used_mask)) == p0_port_be_press_value[1][p0_index]) 
+        if(p0_value == p0_port_be_press_value[0][p0_index] || p0_value == p0_port_be_press_value[1][p0_index]) 
         {
             p1_index = i;
 			checkkey = key_array[p1_index][p0_index];
@@ -594,10 +489,10 @@ u16 keyboard_get_press_key(u16 *funckey)
     } else {
         return 0xFF;
     }
-} 
+}
 //static void aw9523b_work_func(unsigned long data);
 //static DECLARE_WORK(aw9523b_work, aw9523b_work_func);
-
+#endif
 
 
 void aw9523b_irq_disable(struct aw9523b_data *data)
@@ -639,7 +534,6 @@ static void aw9523b_work_func(struct work_struct *work)
 {
     struct aw9523b_data *pdata = NULL;
     static u16 keycode = 0xFF;
-    static u16 pre_keycode = 0xFF;
     static int pressed = 0;
     static u8 capslock_led_enable = 0;
 #if 1
@@ -655,33 +549,6 @@ static void aw9523b_work_func(struct work_struct *work)
 
     //aw9523b_get_P0_value();
     //aw9523b_get_P1_value();
-#if 0
-	func_keycode = keyboard_get_func_press_key();
-	
-	AW9523_LOG("keyboard_get_func_press_key  func_keycode=%x \n",func_keycode);
-	if(!func_pressed) {
-        if(func_keycode == 0xFF)
-        {
-            goto normal_key;
-        }
-
-        func_pressed = 1;
-        input_report_key(aw9523b_input_dev, func_keycode, 1);
-        input_sync(aw9523b_input_dev);
-        pre_func_keycode = func_keycode;
-        AW9523_LOG("(func press) keycode = %d \n", func_keycode);
-    } else {
-
-		if (pre_func_keycode==func_keycode)
-		{
-			goto normal_key;
-		}
-        func_pressed = 0;
-        input_report_key(aw9523b_input_dev, pre_func_keycode, 0);
-        input_sync(aw9523b_input_dev);
-        AW9523_LOG("(func released) keycode = %d \n", pre_func_keycode);
-    }
-#endif
 
     keycode = keyboard_get_press_key(&func_keycode);
 	AW9523_LOG("keyboard_get_press_key  keycode=%x func_keycode=0x%x \n",keycode,func_keycode);
@@ -709,41 +576,45 @@ static void aw9523b_work_func(struct work_struct *work)
         AW9523_LOG("(func released) keycode = %x \n", pre_func_keycode);
     }
 normal_key:
-	 if (KeyBoardKey_State==KEY_STATE_NULL||KeyBoardKey_State==KEY_STATE_RELEASED){
-	 //if(!pressed) {
-	      if(keycode == 0xFF)
-	      {
-	          goto func_exit;
-	      }
-				if(keycode == KEY_CAPSLOCK){
-					if(capslock_led_enable == 0)
-						gpio_direction_output(pdata->gpio_caps_led, 1);
-					capslock_led_enable++;
+	// Store previous key matrix state and read the new one.
+	static u8 state[Y_NUM] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+	static u8 state_prev[Y_NUM] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+	for (i = 0; i < Y_NUM; i++) {
+		state_prev[i] = state[i];
+		aw9523b_set_P1_value(~(1 << i));
+		state[i] = (aw9523b_get_P0_value());
+		AW9523_LOG("p1_value=%x p0_value=%x\n", ~(1 << i), p0_value);
+	}
+
+	// Find changed keys.
+	static u8 remap[X_NUM] = { 0x01, 0x40, 0x20, 0x10, 0x08, 0x02, 0x04, 0x80 }; // TODO Just reorganize keys_array instead.
+	for (i = 0; i < Y_NUM; i++) {
+		u8 diff = state[i] ^ state_prev[i];
+		for (j = 0; j < X_NUM; j++) {
+			if (diff & (1 << j)) {
+				keycode = key_array[i][remap[j]];
+				if (!(state[i] & (1 << j))) { // Key press.
+					if(keycode == KEY_CAPSLOCK){
+						if(capslock_led_enable == 0)
+							gpio_direction_output(pdata->gpio_caps_led, 1);
+						capslock_led_enable++;
+					}
+					input_report_key(aw9523b_input_dev, keycode, 1);
+					input_sync(aw9523b_input_dev);
+					AW9523_LOG("(press) keycode = %d \n", keycode);
+				} else { // Key release.
+					if(capslock_led_enable>=2){
+						gpio_direction_output(pdata->gpio_caps_led, 0);
+						capslock_led_enable = 0;
+					}
+					input_report_key(aw9523b_input_dev, pre_keycode, 0);
+					input_sync(aw9523b_input_dev);
+					AW9523_LOG("(released) keycode = %d \n", pre_keycode);
 				}
-	      pressed = 1;
-	      KeyBoardKey_State=KEY_STATE_PRESSED;
-	      input_report_key(aw9523b_input_dev, keycode, 1);
-	      input_sync(aw9523b_input_dev);
-	      pre_keycode = keycode;
-	      AW9523_LOG("(press) keycode = %d \n", keycode);
-    } 
-    //else 
-    else if (KeyBoardKey_State==KEY_STATE_PRESSED)
-    {		
-				if(capslock_led_enable>=2){
-					gpio_direction_output(pdata->gpio_caps_led, 0);
-					capslock_led_enable = 0;
-				}
-			  pressed = 0;
-			  if(keycode != pre_keycode)
-			  {	
-					  KeyBoardKey_State=KEY_STATE_RELEASED;
-					  input_report_key(aw9523b_input_dev, pre_keycode, 0);
-					  input_sync(aw9523b_input_dev);
-					  AW9523_LOG("(released) keycode = %d \n", pre_keycode);
-			  }
-    }
-    
+			}
+		}
+	}
+
  func_exit:
     //aw9523b_enable_P0_interupt();
     //aw9523b_get_P0_value();
