@@ -607,9 +607,9 @@ normal_key:
 						gpio_direction_output(pdata->gpio_caps_led, 0);
 						capslock_led_enable = 0;
 					}
-					input_report_key(aw9523b_input_dev, pre_keycode, 0);
+					input_report_key(aw9523b_input_dev, keycode, 0);
 					input_sync(aw9523b_input_dev);
-					AW9523_LOG("(released) keycode = %d \n", pre_keycode);
+					AW9523_LOG("(released) keycode = %d \n", keycode);
 				}
 			}
 		}
