@@ -360,6 +360,49 @@ static const u16 qwertz_fn_keys[AW9523_NR_KEYS] = {
 	KEY_2 | KF_SHIFT,		KEY_4 | KF_SHIFT,		KEY_TAB,			KEY_RESERVED,
 };
 
+static char keymap[] =
+	"??1234567890-=??"
+	"QWERTYUIOP[]??AS"
+	"DFGHJKL;'`?\\ZXCV"
+	"BNM,./??? ??????";
+
+static char key_to_ascii(u16 key) {
+	if (key < sizeof(keymap)) {
+		return keymap[key];
+	}
+	return '?';
+}
+
+struct keylog_entry {
+	unsigned long	stamp;
+	u16		action;
+	u16		key;
+};
+
+/*
+ * Buffer size is limited by sysfs to one page (4k).
+ * xxxxxxxx ..\n -> 12 chars per entry.
+ * 4096 / 12 = 341
+ * Round that down to a nice even 256.
+ */
+#define KEYLOG_BUFFER_SIZE 256
+#define KEYLOG_RELEASE 0
+#define KEYLOG_PRESS 1
+static struct keylog_entry keylog_buffer[KEYLOG_BUFFER_SIZE];
+static int keylog_head;
+static int keylog_tail;
+static void keylog_add(u16 action, u16 key) {
+	struct keylog_entry entry;
+	entry.stamp = jiffies;
+	entry.action = action;
+	entry.key = key;
+	keylog_buffer[keylog_head] = entry;
+	keylog_head = (keylog_head + 1) % KEYLOG_BUFFER_SIZE;
+	if (keylog_tail == keylog_head) {
+		keylog_tail = (keylog_tail + 1) % KEYLOG_BUFFER_SIZE;
+	}
+}
+
 static int aw9523b_i2c_read(struct i2c_client *client, char *writebuf,
                int writelen, char *readbuf, int readlen)
 {
@@ -629,6 +672,7 @@ static void aw9523b_check_keys(struct aw9523b_data *pdata, u8* keyboard_state)
 			if (keycode == KEY_RESERVED) {
 				continue;
 			}
+			keylog_add(KEYLOG_PRESS, keycode);
 			pressed[key_nr] = keycode;
 			if ((force_flags & KF_SHIFT) && !(g_logical_modifiers & KF_SHIFT)) {
 				input_report_key(aw9523b_input_dev, KEY_LEFTSHIFT, 1);
@@ -664,6 +708,7 @@ static void aw9523b_check_keys(struct aw9523b_data *pdata, u8* keyboard_state)
 			if (keycode == KEY_RESERVED) {
 				continue;
 			}
+			keylog_add(KEYLOG_RELEASE, keycode);
 			pressed[key_nr] = 0;
 			input_report_key(aw9523b_input_dev, keycode, 0);
 			input_sync(aw9523b_input_dev);
@@ -965,6 +1010,30 @@ static ssize_t aw9523b_store_poll_interval(struct device *dev,
 	return count;
 }
 
+static ssize_t aw9523b_show_keylog(struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	int pos;
+	char *p = buf;
+	for (pos = keylog_tail; pos != keylog_head; pos = (pos + 1) % KEYLOG_BUFFER_SIZE) {
+		struct keylog_entry *entry = keylog_buffer + pos;
+		sprintf(p, "%08x %c%c\n",
+			(entry->stamp & 0xffffffff),
+			(entry->action == KEYLOG_RELEASE) ? '<' : '>',
+			key_to_ascii(entry->key));
+		p += 12;
+	}
+	return (p - buf);
+}
+
+static ssize_t aw9523b_store_keylog(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	return -EINVAL;
+}
+
 static DEVICE_ATTR(layout, (S_IRUGO | S_IWUSR | S_IWGRP),
 	aw9523b_show_layout,
 	aw9523b_store_layout);
@@ -977,6 +1046,10 @@ static DEVICE_ATTR(poll_interval, (S_IRUGO | S_IWUSR | S_IWGRP),
 	aw9523b_show_poll_interval,
 	aw9523b_store_poll_interval);
 
+static DEVICE_ATTR(keylog, (S_IRUGO | S_IWUSR | S_IWGRP),
+	aw9523b_show_keylog,
+	aw9523b_store_keylog);
+
 static struct attribute *aw9523b_attrs[] = {
 #ifdef DEBUG
 	&dev_attr_regs.attr,
@@ -985,6 +1058,7 @@ static struct attribute *aw9523b_attrs[] = {
 	&dev_attr_layout.attr,
 	&dev_attr_keymap.attr,
 	&dev_attr_poll_interval.attr,
+	&dev_attr_keylog,
 	NULL
 };
 
