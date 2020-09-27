@@ -735,4 +735,10 @@ config KEYBOARD_QX1000
 	help
 	  Say Y here to enable the QX1000 keyboard driver.
 
+config KEYBOARD_AW9523B
+	tristate "AW9523B keyboard driver for FxTec Pro1"
+	depends on I2C
+	help
+	  Say Y here to enable the AW9523B keyboard driver.
+
 endif
