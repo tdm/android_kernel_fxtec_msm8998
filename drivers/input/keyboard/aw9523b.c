@@ -199,7 +199,8 @@ struct aw9523b_data {
 	int			gpio_rst;
 	int			gpio_caps_led;
 	int			gpio_irq;
-	struct delayed_work	work;
+	struct work_struct	irq_work;
+	struct delayed_work	poll_work;
 
 	struct notifier_block   fb_client;
 	bool			fb_blanked;
@@ -636,49 +637,18 @@ static void aw9523b_read_keyboard_state(u8* keyboard_state)
 #define CONFIG_PORT1    (0x05)
 
   
-static void aw9523b_work_func(struct work_struct *work)
+static void aw9523b_check_keys(struct aw9523b_data *pdata, u8* state)
 {
-	u8 state[Y_NUM] = { 0, 0, 0, 0, 0, 0, 0, 0 }; // State of the matrix.
 	static u8 down[Y_NUM] = { 0, 0, 0, 0, 0, 0, 0, 0 }; // Which keys keydown events are actually sent for (excludes ghosted keys).
 
 	static u16 pressed[AW9523_NR_KEYS] = { 0 }; /* Elements are keycodes */
 
-	struct aw9523b_data *pdata = NULL;
 	u16 keycode = 0xFF;
 	static u8 capslock_led_enable = 0;
 	int i, j, k;
 	u8 keymask = 0;
 
-	pdata = container_of((struct delayed_work *) work, struct aw9523b_data, work);
 	AW9523_LOG("aw9523b_work_func  enter \n");
-
-	aw9523b_disable_P0_interrupt();
-
-	// Scan the matrix.
-	for (i = 0; i < Y_NUM; i++) {
-		// This sets the direction of the register.
-		// We do this so that there is only one row drive and the rest is hi-z.
-		// This is important as otherwise another key in the same column will drive the row positive.
-		aw9523b_write_reg(CONFIG_PORT1, ~(1 << i));
-		state[i] = ~aw9523b_get_P0_value();
-	}
-
-	// Scan the matrix again to verify there was no state change during the scan, as this could mess with the anti-ghosting.
-	for (i = 0; i < Y_NUM; i++) {
-		aw9523b_write_reg(CONFIG_PORT1, ~(1 << i));
-		if (state[i] != (u8) ~aw9523b_get_P0_value()) {
-			AW9523_LOG("mid-scan key state change");
-			schedule_delayed_work(&pdata->work, 0);
-			return;
-		}
-	}
-
-	// Restore P1 configuration and set keymask to reflect used columns.
-	aw9523b_write_reg(CONFIG_PORT1, 0);
-	for (i = 0; i < Y_NUM; i++) {
-		keymask |= state[i];
-		AW9523_LOG("p1_value=%x p0_value=%x\n", ~(1 << i), ~state[i]);
-	}
 
 	// Find changed keys and send keycodes for them.
 	for (i = 0; i < Y_NUM; i++) {
@@ -794,38 +764,93 @@ static void aw9523b_work_func(struct work_struct *work)
 		}
 	}
 	input_sync(aw9523b_input_dev);
-
-	// We re-schedule ourselves to poll for changes if a key is pressed
-	//   because the pressed key could obscure others when not scanning.
-	if (keymask)
-		schedule_delayed_work(&pdata->work, msecs_to_jiffies(g_poll_interval));
-
-	// Re-enabled the interrupt and make sure all is right.
-	aw9523b_disable_P1_interrupt();
-	aw9523b_set_P1_value(P1_DEFAULT_VALUE);
-	aw9523b_config_P1_output();
-	aw9523b_irq_enable(pdata);
-	aw9523b_config_P0_input();
-	aw9523b_enable_P0_interrupt();
-
-	// Check if there wasn't a key pressed while we had interrupts disabled.
-	if (aw9523b_get_P0_value() != (u8) ~keymask) {
-		AW9523_LOG("missed state change");
-		schedule_delayed_work(&pdata->work, 0);
-	}
 }
 
+static void aw9523b_irq_work(struct work_struct *work)
+{
+	struct aw9523b_data *pdata = container_of(work, struct aw9523b_data, irq_work);
+	u8 keyboard_state[AW9523_NR_PORTS];
+	u8 keyboard_state_verify[AW9523_NR_PORTS];
+	int idx;
+	u8 p0_mask;
+
+	aw9523b_disable_P0_interrupt();
+	aw9523b_read_keyboard_state(keyboard_state);
+
+	// Scan the matrix again to verify there was no state change during the scan, as this could mess with the anti-ghosting.
+	aw9523b_read_keyboard_state(keyboard_state_verify);
+	if (memcmp(keyboard_state, keyboard_state_verify, AW9523_NR_PORTS) != 0) {
+		AW9523_LOG("mid-scan key state change");
+		schedule_delayed_work(&pdata->poll_work, 0);
+		return;
+	}
+
+	aw9523b_check_keys(pdata, keyboard_state);
+	p0_mask = 0x00;
+	for (idx = 0; idx < AW9523_NR_PORTS; ++idx) {
+		if (keyboard_state[idx]) {
+			p0_mask = 0xff; /* |= (1 << idx); */
+		}
+	}
+	aw9523b_config_P0_input();
+	aw9523b_enable_P0_interrupt_mask(p0_mask);
+	if (p0_mask != 0x00) {
+		printk(KERN_INFO "%s: enter polling mode: p0_mask=%02x\n", __func__, p0_mask);
+		schedule_delayed_work(&pdata->poll_work, msecs_to_jiffies(g_poll_interval));
+	}
+	aw9523b_config_P1_output();
+	aw9523b_disable_P1_interrupt();
+	aw9523b_set_P1_value(OUT_LOW_VALUE);
+	aw9523b_irq_enable(pdata);
+}
+
+static void aw9523b_poll_work(struct work_struct *work)
+{
+	struct delayed_work *dwork = container_of(work, struct delayed_work, work);
+	struct aw9523b_data *pdata = container_of(dwork, struct aw9523b_data, poll_work);
+	u8 keyboard_state[AW9523_NR_PORTS];
+	int idx;
+	u8 p0_mask;
+	unsigned int poll_delay = g_poll_interval;
+
+	aw9523b_read_keyboard_state(keyboard_state);
+	aw9523b_check_keys(pdata, keyboard_state);
+	p0_mask = 0x00;
+	for (idx = 0; idx < AW9523_NR_PORTS; ++idx) {
+		if (keyboard_state[idx]) {
+			p0_mask = 0xff; /* |= (1 << idx); */
+		}
+	}
+	aw9523b_enable_P0_interrupt_mask(p0_mask);
+	if (p0_mask == 0x00) {
+		u8 val = ~aw9523b_get_P0_value();
+		if (val) {
+			/*
+			 * A key was pressed between reading the keyboard
+			 * state and enabling interrupts.  Reschedule ourself
+			 * immediately and disable interrupts.
+			 */
+			poll_delay = 0;
+			p0_mask = 0xff;
+			aw9523b_enable_P0_interrupt_mask(p0_mask);
+		}
+	}
+	if (p0_mask != 0x00) {
+		schedule_delayed_work(&pdata->poll_work, msecs_to_jiffies(poll_delay));
+	}
+	else {
+		printk(KERN_INFO "%s: enter irq mode\n", __func__);
+	}
+}
 static irqreturn_t aw9523b_irq_handler(int irq, void *dev_id)
 {
-    struct aw9523b_data *pdata = dev_id;
+	struct aw9523b_data *pdata = dev_id;
 
-    AW9523_LOG("%s enter\n",__func__);
+	printk(KERN_INFO "%s: enter\n", __func__);
+	aw9523b_irq_disable(pdata);
+	schedule_work(&pdata->irq_work);
 
-    aw9523b_irq_disable(pdata);
-
-    schedule_delayed_work(&pdata->work, 0);
-
-    return IRQ_HANDLED;
+	return IRQ_HANDLED;
 }
 
 /* sysfs */
@@ -1294,7 +1319,8 @@ static int aw9523b_probe(struct i2c_client *client,
 	aw9523b_get_P0_value();
 	aw9523b_get_P1_value();
 
-	INIT_DELAYED_WORK(&pdata->work, aw9523b_work_func);
+	INIT_WORK(&pdata->irq_work, aw9523b_irq_work);
+	INIT_DELAYED_WORK(&pdata->poll_work, aw9523b_poll_work);
 	pdata->irq_is_disabled = false;
 	err = request_irq(client->irq,
 			  aw9523b_irq_handler,
@@ -1328,7 +1354,7 @@ static int aw9523b_remove(struct i2c_client *client)
 {
 	struct aw9523b_data *data = i2c_get_clientdata(client);
     
-	cancel_delayed_work_sync(&data->work);
+	cancel_delayed_work_sync(&data->poll_work);
 
 	aw9523b_power_deinit(data);
 	i2c_set_clientdata(client, NULL);
